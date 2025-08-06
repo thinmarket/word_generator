@@ -4,7 +4,7 @@
 import sys
 import requests
 import re
-from typing import List, Set
+from typing import List, Set, Dict
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QGridLayout, QLabel, QLineEdit, 
                              QPushButton, QTextEdit, QCheckBox, QSpinBox,
@@ -129,7 +129,8 @@ class WordGeneratorThread(QThread):
         forbidden_letters = set(conditions['forbidden_letters'])
         required_letters = set(conditions['required_letters'])
         word_length = conditions['word_length']
-        positional_constraints = conditions['positional_constraints']
+        positional_must = conditions['positional_must']  # {буква: [позиции]}
+        positional_forbidden = conditions['positional_forbidden']  # {буква: [позиции]}
         only_nouns = conditions['only_nouns']
         exclude_verbs = conditions['exclude_verbs']
         
@@ -151,16 +152,31 @@ class WordGeneratorThread(QThread):
             if required_letters and not all(letter in word for letter in required_letters):
                 continue
             
-            # Проверяем позиционные ограничения
+            # Проверяем обязательные позиции букв
             skip_word = False
-            for letter, positions in positional_constraints.items():
-                if letter in word:
-                    for pos in positions:
-                        if pos < len(word) and word[pos] == letter:
-                            skip_word = True
-                            break
-                    if skip_word:
+            for letter, positions in positional_must.items():
+                if letter not in word:
+                    skip_word = True
+                    break
+                for pos in positions:
+                    if word[pos] != letter:
+                        skip_word = True
                         break
+                if skip_word:
+                    break
+            if skip_word:
+                continue
+            
+            # Проверяем запрещенные позиции букв
+            for letter, positions in positional_forbidden.items():
+                if letter not in word:
+                    continue
+                for pos in positions:
+                    if word[pos] == letter:
+                        skip_word = True
+                        break
+                if skip_word:
+                    break
             if skip_word:
                 continue
             
@@ -211,33 +227,40 @@ class WordGeneratorThread(QThread):
         forbidden_letters = set(conditions['forbidden_letters'])
         required_letters = set(conditions['required_letters'])
         word_length = conditions['word_length']
-        positional_constraints = conditions['positional_constraints']
+        positional_must = conditions['positional_must']
+        positional_forbidden = conditions['positional_forbidden']
         
         all_russian_letters = set('абвгдеёжзийклмнопрстуфхцчшщъыьэюя')
         available_letters = all_russian_letters - forbidden_letters
         
         possible_words = []
         
-        # Генерируем комбинации
+        def is_valid(word: str) -> bool:
+            # Проверяем обязательные буквы
+            if required_letters and not all(letter in word for letter in required_letters):
+                return False
+            
+            # Проверяем обязательные позиции
+            for letter, positions in positional_must.items():
+                if letter not in word:
+                    return False
+                for pos in positions:
+                    if word[pos] != letter:
+                        return False
+            
+            # Проверяем запрещенные позиции
+            for letter, positions in positional_forbidden.items():
+                if letter not in word:
+                    continue
+                for pos in positions:
+                    if word[pos] == letter:
+                        return False
+            return True
+        
         def generate_combinations(current_word, position):
             if position == word_length:
-                # Проверяем условия
-                if required_letters and not all(letter in current_word for letter in required_letters):
-                    return
-                
-                skip_word = False
-                for letter, positions in positional_constraints.items():
-                    if letter in current_word:
-                        for pos in positions:
-                            if pos < len(current_word) and current_word[pos] == letter:
-                                skip_word = True
-                                break
-                        if skip_word:
-                            break
-                if skip_word:
-                    return
-                
-                possible_words.append(current_word)
+                if is_valid(current_word):
+                    possible_words.append(current_word)
                 return
             
             for letter in available_letters:
@@ -276,7 +299,8 @@ class WordGeneratorGUI(QMainWindow):
             'word_length': 5,
             'forbidden_letters': set(),
             'required_letters': set(),
-            'positional_constraints': {},
+            'positional_must': {},  # {буква: [позиции (0-based)]}
+            'positional_forbidden': {},  # {буква: [позиции (0-based)]}
             'only_nouns': True,
             'exclude_verbs': True
         }
@@ -349,9 +373,17 @@ class WordGeneratorGUI(QMainWindow):
         positional_layout = QVBoxLayout(positional_group)
         
         self.positional_input = QLineEdit()
-        self.positional_input.setPlaceholderText("Формат: буква:позиция,позиция (например: в:3,4 или р:1)")
+        self.positional_input.setPlaceholderText("Формат: буква=позиция или буква≠позиция (например: о=2, в≠1,4)")
         self.positional_input.textChanged.connect(self.update_positional_constraints)
         positional_layout.addWidget(self.positional_input)
+        
+        # Подсказка
+        hint = QLabel("• Используйте = для обязательных позиций (например: о=2)\n"
+                     "• Используйте ≠ для запрещенных позиций (например: в≠1,4)\n"
+                     "• Позиции указываются от 1 до длины слова")
+        hint.setStyleSheet("color: #666; font-size: 10pt;")
+        positional_layout.addWidget(hint)
+        
         layout.addWidget(positional_group)
         
         # Дополнительные фильтры
@@ -460,22 +492,42 @@ class WordGeneratorGUI(QMainWindow):
         self.conditions['required_letters'] = letters
     
     def update_positional_constraints(self):
-        """Обновляет позиционные ограничения"""
+        """Обновляет позиционные ограничения (1-based индексы)"""
         text = self.positional_input.text().lower()
-        constraints = {}
+        must = {}
+        forbidden = {}
         
         for part in text.split(','):
             part = part.strip()
-            if ':' in part:
-                letter, positions = part.split(':', 1)
+            if not part:
+                continue
+                
+            # Обработка формата "о=2" (буква "о" на 2-й позиции)
+            if '=' in part:
+                letter, pos_str = part.split('=', 1)
                 letter = letter.strip()
                 try:
-                    pos_list = [int(p.strip()) - 1 for p in positions.split(',')]  # -1 для индексации с 0
-                    constraints[letter] = pos_list
+                    positions = [int(p.strip()) - 1 for p in pos_str.split(',')]  # Переводим в 0-based
+                    if letter not in must:
+                        must[letter] = []
+                    must[letter].extend([p for p in positions if p >= 0])
+                except ValueError:
+                    continue
+            
+            # Обработка формата "в≠1,4" (буква "в" не на 1-й и 4-й позициях)
+            elif '≠' in part:
+                letter, pos_str = part.split('≠', 1)
+                letter = letter.strip()
+                try:
+                    positions = [int(p.strip()) - 1 for p in pos_str.split(',')]  # Переводим в 0-based
+                    if letter not in forbidden:
+                        forbidden[letter] = []
+                    forbidden[letter].extend([p for p in positions if p >= 0])
                 except ValueError:
                     continue
         
-        self.conditions['positional_constraints'] = constraints
+        self.conditions['positional_must'] = must
+        self.conditions['positional_forbidden'] = forbidden
     
     def toggle_forbidden_letter(self, letter):
         """Переключает букву в запрещенных"""
@@ -570,7 +622,7 @@ class WordGeneratorGUI(QMainWindow):
                     f.write(f"• Длина слова: {self.conditions['word_length']}\n")
                     f.write(f"• Запрещенные буквы: {', '.join(sorted(self.conditions['forbidden_letters']))}\n")
                     f.write(f"• Обязательные буквы: {', '.join(sorted(self.conditions['required_letters']))}\n")
-                    f.write(f"• Позиционные ограничения: {self.conditions['positional_constraints']}\n")
+                    f.write(f"• Позиционные ограничения: {self.positional_input.text()}\n")
                     f.write(f"• Только существительные: {self.conditions['only_nouns']}\n")
                     f.write(f"• Исключить глаголы: {self.conditions['exclude_verbs']}\n\n")
                     
@@ -612,4 +664,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
