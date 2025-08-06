@@ -1,5 +1,6 @@
 ### 🎯 Основные возможности GUI:
-<img width="1202" height="832" alt="word_generator_gui_python" src="https://github.com/user-attachments/assets/da85da8f-5f5d-41ee-9dbf-383a84eeab70" />
+<img width="1202" height="851" alt="word_generator_gui_python" src="https://github.com/user-attachments/assets/12d875dd-ec74-4154-a411-9467094c4075" />
+
 
 
 ## ⚙️ Настройки условий:
